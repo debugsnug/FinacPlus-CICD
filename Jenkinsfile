@@ -1,14 +1,6 @@
 pipeline {
     agent any
 
-    /*
-     * Automatically trigger the pipeline when GitHub sends
-     * a push event to Jenkins.
-     *
-     * Requires:
-     *  - GitHub plugin
-     *  - GitHub webhook configured for this Jenkins server
-     */
     triggers {
         githubPush()
     }
@@ -27,49 +19,25 @@ pipeline {
         )
 
         string(
-            name: 'GCP_PROJECT_ID',
-            defaultValue: 'your-gcp-project-id',
-            description: 'Google Cloud project ID'
-        )
-
-        string(
-            name: 'GCP_ARTIFACT_REPOSITORY',
-            defaultValue: 'finacplus-repo',
-            description: 'Google Artifact Registry repository name'
-        )
-
-        string(
-            name: 'REGISTRY_HOST',
-            defaultValue: 'asia-south1-docker.pkg.dev',
-            description: 'Google Artifact Registry hostname'
+            name: 'DOCKERHUB_USERNAME',
+            defaultValue: 'debugsnug',
+            description: 'Docker Hub username'
         )
     }
 
     environment {
-        /*
-         * Image tag is generated automatically from the Jenkins build number.
-         * Example:
-         *
-         * asia-south1-docker.pkg.dev/my-project/finacplus-repo/cicd-demo-app:12
-         */
         IMAGE_TAG = "${BUILD_NUMBER}"
 
-        FULL_IMAGE_NAME = "${params.REGISTRY_HOST}/${params.GCP_PROJECT_ID}/${params.GCP_ARTIFACT_REPOSITORY}/${params.IMAGE_NAME}:${BUILD_NUMBER}"
+        FULL_IMAGE_NAME = "${params.DOCKERHUB_USERNAME}/${params.IMAGE_NAME}:${BUILD_NUMBER}"
     }
 
     options {
         timestamps()
 
-        /*
-         * Keep only the latest 15 builds.
-         */
         buildDiscarder(
             logRotator(numToKeepStr: '15')
         )
 
-        /*
-         * Prevent a stuck build from running forever.
-         */
         timeout(
             time: 20,
             unit: 'MINUTES'
@@ -78,11 +46,6 @@ pipeline {
 
     stages {
 
-        /*
-         * ---------------------------------------------------------
-         * STAGE 1: CHECKOUT
-         * ---------------------------------------------------------
-         */
         stage('Checkout') {
             steps {
                 echo 'Checking out source code from GitHub...'
@@ -91,14 +54,6 @@ pipeline {
             }
         }
 
-        /*
-         * ---------------------------------------------------------
-         * STAGE 2: VERIFY TOOLS
-         * ---------------------------------------------------------
-         *
-         * This is especially useful on our Windows Jenkins agent.
-         * It immediately tells us if Jenkins can see the tools it needs.
-         */
         stage('Verify Tools') {
             steps {
                 echo 'Verifying required tools...'
@@ -125,16 +80,11 @@ pipeline {
             }
         }
 
-        /*
-         * ---------------------------------------------------------
-         * STAGE 3: INSTALL & TEST
-         * ---------------------------------------------------------
-         */
         stage('Install & Test') {
             steps {
                 dir('app') {
 
-                    echo 'Installing dependencies using npm ci...'
+                    echo 'Installing dependencies...'
 
                     bat 'npm ci'
 
@@ -145,11 +95,6 @@ pipeline {
             }
         }
 
-        /*
-         * ---------------------------------------------------------
-         * STAGE 4: BUILD DOCKER IMAGE
-         * ---------------------------------------------------------
-         */
         stage('Build Docker Image') {
             steps {
                 dir('app') {
@@ -161,46 +106,34 @@ pipeline {
             }
         }
 
-        /*
-         * ---------------------------------------------------------
-         * STAGE 5: PUSH TO GOOGLE ARTIFACT REGISTRY
-         * ---------------------------------------------------------
-         *
-         * Credentials are retrieved from Jenkins Credentials Store.
-         * No service-account key is stored in GitHub.
-         */
-        stage('Push Docker Image') {
+        stage('Push to Docker Hub') {
             steps {
 
+                echo "Pushing ${FULL_IMAGE_NAME} to Docker Hub..."
+
                 withCredentials([
-                    file(
-                        credentialsId: 'gcp-service-account-key',
-                        variable: 'GCP_SA_KEY'
+                    usernamePassword(
+                        credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DOCKER_USERNAME',
+                        passwordVariable: 'DOCKER_PASSWORD'
                     )
                 ]) {
 
                     bat '''
-                        echo Authenticating with Google Cloud...
+                        echo Logging in to Docker Hub...
 
-                        gcloud auth activate-service-account --key-file="%GCP_SA_KEY%"
-
-                        echo Configuring Docker authentication...
-
-                        gcloud auth configure-docker %REGISTRY_HOST% --quiet
+                        docker login -u "%DOCKER_USERNAME%" -p "%DOCKER_PASSWORD%"
 
                         echo Pushing Docker image...
 
-                        docker push %FULL_IMAGE_NAME%
+                        docker push "%FULL_IMAGE_NAME%"
+
+                        echo Docker image pushed successfully.
                     '''
                 }
             }
         }
 
-        /*
-         * ---------------------------------------------------------
-         * STAGE 6: DEPLOY TO KUBERNETES
-         * ---------------------------------------------------------
-         */
         stage('Deploy to Kubernetes') {
             steps {
 
@@ -213,12 +146,6 @@ pipeline {
 
                     echo "Deploying ${FULL_IMAGE_NAME} to Kubernetes..."
 
-                    /*
-                     * PowerShell is used because Jenkins is running on Windows.
-                     *
-                     * IMAGE_PLACEHOLDER in deployment.yaml is replaced
-                     * with the exact Docker image generated by this build.
-                     */
                     powershell '''
                         $deploymentFile = "k8s/deployment.yaml"
                         $renderedFile = "k8s/deployment-rendered.yaml"
@@ -235,19 +162,19 @@ pipeline {
                             -Path $renderedFile `
                             -Value $content
 
-                        Write-Host "Applying Kubernetes deployment..."
+                        Write-Host "Applying deployment..."
 
                         kubectl apply `
                             -f $renderedFile `
                             -n $env:K8S_NAMESPACE
 
-                        Write-Host "Applying Kubernetes service..."
+                        Write-Host "Applying service..."
 
                         kubectl apply `
                             -f k8s/service.yaml `
                             -n $env:K8S_NAMESPACE
 
-                        Write-Host "Waiting for Kubernetes rollout..."
+                        Write-Host "Waiting for rollout..."
 
                         kubectl rollout status `
                             deployment/cicd-demo-app `
@@ -260,11 +187,6 @@ pipeline {
             }
         }
 
-        /*
-         * ---------------------------------------------------------
-         * STAGE 7: VERIFY DEPLOYMENT
-         * ---------------------------------------------------------
-         */
         stage('Verify Deployment') {
             steps {
 
@@ -276,19 +198,19 @@ pipeline {
                 ]) {
 
                     powershell '''
-                        Write-Host "===== Kubernetes Deployment ====="
+                        Write-Host "===== Deployment ====="
 
                         kubectl get deployment `
                             cicd-demo-app `
                             -n $env:K8S_NAMESPACE
 
-                        Write-Host "===== Kubernetes Pods ====="
+                        Write-Host "===== Pods ====="
 
                         kubectl get pods `
                             -l app=cicd-demo-app `
                             -n $env:K8S_NAMESPACE
 
-                        Write-Host "===== Kubernetes Service ====="
+                        Write-Host "===== Service ====="
 
                         kubectl get service `
                             cicd-demo-app-service `
@@ -299,11 +221,6 @@ pipeline {
         }
     }
 
-    /*
-     * -------------------------------------------------------------
-     * POST-BUILD HANDLING
-     * -------------------------------------------------------------
-     */
     post {
 
         success {
@@ -323,30 +240,21 @@ pipeline {
             ==========================================
             CI/CD PIPELINE FAILED
             ==========================================
-            Check the failed stage and console logs
-            above for the root cause.
+            Check the failed stage and console logs.
             ==========================================
             """
         }
 
         always {
 
-            /*
-             * Remove the temporary rendered Kubernetes manifest.
-             */
             powershell '''
                 if (Test-Path "k8s/deployment-rendered.yaml") {
                     Remove-Item "k8s/deployment-rendered.yaml" -Force
                 }
             '''
 
-            /*
-             * Revoke Google Cloud authentication if gcloud
-             * is available. Failure of cleanup must not change
-             * the actual pipeline result.
-             */
             bat '''
-                gcloud auth revoke --all --quiet >nul 2>&1
+                docker logout >nul 2>&1
                 exit /b 0
             '''
         }

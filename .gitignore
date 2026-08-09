@@ -12,6 +12,7 @@ npm-debug.log*
 
 # Jenkins / local tooling
 jenkins_home/
+kubeconfig-jenkins
 
 # OS files
 .DS_Store
