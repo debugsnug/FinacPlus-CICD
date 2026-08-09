@@ -1,0 +1,13 @@
+{
+  "name": "cicd-demo-app",
+  "version": "1.0.0",
+  "description": "Sample app used to demonstrate a Jenkins -> Kubernetes CI/CD pipeline",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

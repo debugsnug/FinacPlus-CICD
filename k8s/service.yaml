@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cicd-demo-app-service
+spec:
+  selector:
+    app: cicd-demo-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+  type: ClusterIP   # internal by default; switch to LoadBalancer for external access on GCP
