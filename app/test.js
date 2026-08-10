@@ -1,16 +1,10 @@
-// Smoke test that actually exercises the running Express app, not just
-// arbitrary JS. Starts the real server, hits /health, and checks the
-// response — this is the same endpoint the K8s readiness/liveness probes
-// use, so passing this test is a genuine signal the app is deployable.
-
 const assert = require('assert');
 const http = require('http');
 
-const PORT = 4000; // separate from the app's default 3000 to avoid clashing
-                    // with anything already running in the CI environment
+const PORT = 4000;
 process.env.PORT = PORT;
 
-const app = require('./index.js'); // starts listening as a side effect
+require('./index.js');
 
 function get(path) {
   return new Promise((resolve, reject) => {

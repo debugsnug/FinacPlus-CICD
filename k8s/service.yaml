@@ -9,4 +9,4 @@ spec:
     - protocol: TCP
       port: 80
       targetPort: 3000
-  type: ClusterIP   # internal by default; switch to LoadBalancer for external access on GCP
+  type: ClusterIP

@@ -5,14 +5,14 @@ metadata:
   labels:
     app: cicd-demo-app
 spec:
-  replicas: 2   # 2+ replicas so a single pod failure doesn't cause downtime
+  replicas: 2
   selector:
     matchLabels:
       app: cicd-demo-app
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0   # never drop below desired replica count during a deploy
+      maxUnavailable: 0
       maxSurge: 1
   template:
     metadata:
@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: cicd-demo-app
-          image: IMAGE_PLACEHOLDER   # replaced by Jenkins at deploy time
+          image: IMAGE_PLACEHOLDER
           ports:
             - containerPort: 3000
           resources:

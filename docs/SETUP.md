@@ -1,103 +1,178 @@
 # Setup Instructions
 
 ## Prerequisites
-- A Jenkins server, with `gcloud`, `docker`, and `kubectl` installed on the Jenkins agent
-- A GCP project with:
-  - **Artifact Registry** enabled (container registry)
-  - **GKE** cluster (or any Kubernetes cluster you have `kubectl` access to)
-- A GCP **service account** with permissions to push to Artifact Registry and
-  deploy to GKE (`roles/artifactregistry.writer`, `roles/container.developer`)
-- Jenkins plugins: **GitHub Plugin** (for the push trigger), **Docker Pipeline**
 
-## 1. Repository layout
+The following tools are required (Windows):
 
-The Jenkinsfile lives **inside the application repository**, not in a
-separate "CI config repo." Jenkins is configured with "Pipeline script from
-SCM," so it always builds whichever repo/branch triggered it — there's no
-separate repo URL to keep in sync with the actual code.
+- Git
+- Node.js and npm
+- Docker Desktop
+- Kubernetes enabled in Docker Desktop
+- kubectl
+- Jenkins
+- GitHub account
+- Docker Hub account
+
+Verify the installations:
+
+```cmd
+git --version
+node --version
+npm --version
+docker --version
+kubectl version --client
+java -version
+```
+
+## 1. Repository Layout
 
 ```
-your-app-repo/
+.
 ├── Jenkinsfile
+├── README.md
+├── .gitignore
 ├── app/
+│   ├── Dockerfile
+│   ├── index.js
+│   ├── package.json
+│   ├── package-lock.json
+│   └── test.js
 ├── k8s/
+│   ├── deployment.yaml
+│   └── service.yaml
 └── docs/
+    └── SETUP.md
 ```
 
-## 2. Configure Jenkins credentials
+## 2. Clone the Repository
 
-In Jenkins: **Manage Jenkins → Credentials → Add Credentials**
-
-| Credential ID              | Type            | What it holds                              |
-|------------------------------|------------------|-----------------------------------------------|
-| `gcp-service-account-key`    | Secret file      | JSON key file for the GCP service account   |
-| `kubeconfig-credentials`     | Secret file      | kubeconfig for the target GKE cluster       |
-
-These IDs are referenced by name in the `Jenkinsfile` — they must match exactly.
-
-## 3. Create the Jenkins pipeline job
-
-1. New Item → Pipeline
-2. Under **Pipeline**, choose "Pipeline script from SCM"
-3. SCM: Git → point it at your application repository, branch `main`
-4. Script path: `Jenkinsfile`
-
-## 4. Set up the webhook (so commits auto-trigger builds)
-
-This is what satisfies "Jenkins should automatically trigger a build on
-commit" — the `triggers { githubPush() }` block in the Jenkinsfile only
-works once the webhook side is wired up:
-
-1. In your GitHub repo: Settings → Webhooks → Add webhook
-2. Payload URL: `http://<your-jenkins-url>/github-webhook/`
-3. Content type: `application/json`
-4. Trigger on: **push events**
-5. In the Jenkins job config, confirm "GitHub hook trigger for GITScm
-   polling" is checked (this is enabled automatically once `githubPush()`
-   is present in the Jenkinsfile and the job has run once)
-
-## 5. Adjust parameters for your environment
-
-The Jenkinsfile exposes these build parameters:
-- `K8S_NAMESPACE` — target namespace on the cluster
-- `IMAGE_NAME` — image name
-- `GCP_PROJECT_ID` — GCP project hosting Artifact Registry / GKE
-- `REGISTRY_HOST` — Artifact Registry host, e.g. `asia-south1-docker.pkg.dev`
-
-Change the **defaults** in the `parameters` block to match your project, or
-override them per-build via "Build with Parameters" in Jenkins. This is what
-makes the pipeline reusable across different clusters/projects without
-touching the pipeline code.
-
-## 6. Run it
-
-- Push a commit — the webhook triggers the build automatically.
-- Or click "Build with Parameters" in Jenkins to trigger manually.
-- Watch the stage view in Jenkins for progress.
-- Verify the deployment:
-  ```
-  kubectl get pods -n <namespace>
-  kubectl get deployment cicd-demo-app -n <namespace>
-  ```
-
-## 7. Local test before wiring up Jenkins (optional)
-
-Sanity-check the app and image locally, without touching GCP:
+```cmd
+git clone https://github.com/debugsnug/FinacPlus-CICD.git
+cd FinacPlus-CICD
 ```
+
+## 3. Test the Application Locally
+
+```cmd
 cd app
 npm ci
 npm test
-docker build -t cicd-demo-app:local .
-docker run -p 3000:3000 cicd-demo-app:local
-curl http://localhost:3000/health
+cd ..
 ```
 
-## Notes on registry choice
+## 4. Build and Run the Docker Image Locally
 
-This pipeline targets **Google Artifact Registry** to match the GCP stack
-used by the target role/client. If you want to demo the pipeline without a
-GCP account, the only stage that needs changing is **"Push Docker Image"** —
-swap the `gcloud auth` + push commands for a `docker login` +
-`docker push` against Docker Hub, and swap `REGISTRY_HOST`/`GCP_PROJECT_ID`
-for your Docker Hub username. Everything else (checkout, test, build,
-deploy) stays identical.
+```cmd
+docker build -t finacplus-cicd-demo:local app
+docker run --rm -p 4000:3000 finacplus-cicd-demo:local
+```
+
+The application is available at `http://localhost:4000`.
+
+## 5. Enable Kubernetes
+
+Enable Kubernetes from Docker Desktop settings, then verify the cluster:
+
+```cmd
+kubectl cluster-info
+kubectl get nodes
+```
+
+The node should report a `Ready` status.
+
+## 6. Configure Jenkins Credentials
+
+Go to: **Manage Jenkins → Credentials → System → Global credentials**
+
+**Docker Hub** — create a `Username with password` credential:
+```
+ID: dockerhub-credentials
+Username: <Docker Hub username>
+Password: <Docker Hub Personal Access Token>
+```
+
+**Kubernetes** — create a `Secret file` credential:
+```
+ID: kubeconfig-credentials
+File: <kubeconfig for the Docker Desktop cluster>
+```
+
+Credential values must never be committed to the repository.
+
+## 7. Create the Jenkins Pipeline Job
+
+1. New Item → Pipeline
+2. Under **Pipeline**, choose "Pipeline script from SCM"
+3. SCM: Git → repository: `https://github.com/debugsnug/FinacPlus-CICD.git`
+4. Branch: `*/main`
+5. Script Path: `Jenkinsfile`
+
+## 8. Pipeline Parameters
+
+| Parameter             | Default          |
+|------------------------|-------------------|
+| `K8S_NAMESPACE`         | `default`         |
+| `IMAGE_NAME`            | `cicd-demo-app`   |
+| `DOCKERHUB_USERNAME`    | `debugsnug`       |
+
+## 9. Pipeline Stages
+
+```
+Checkout
+   ↓
+Verify Tools
+   ↓
+Install & Test
+   ↓
+Build Docker Image
+   ↓
+Push to Docker Hub
+   ↓
+Deploy to Kubernetes
+   ↓
+Verify Deployment
+```
+
+Docker images are tagged with the Jenkins build number:
+```
+debugsnug/cicd-demo-app:<BUILD_NUMBER>
+```
+
+## 10. Verify the Kubernetes Deployment
+
+```cmd
+kubectl get deployment cicd-demo-app
+kubectl get pods
+kubectl get service cicd-demo-app-service
+```
+
+The Deployment should report two available replicas.
+
+To access the application locally:
+
+```cmd
+kubectl port-forward service/cicd-demo-app-service 8081:80
+```
+
+Then open `http://localhost:8081`.
+
+## 11. CI/CD Validation
+
+To validate the complete pipeline end to end:
+
+1. Modify the application source code.
+2. Commit the change.
+3. Push the change to the `main` branch.
+4. Run the Jenkins pipeline.
+5. Verify a new Docker image is built and pushed.
+6. Verify the Kubernetes rolling update completes.
+7. Verify the updated application response.
+
+## Security
+
+- Docker Hub credentials are stored in Jenkins Credentials.
+- Kubernetes credentials are stored in Jenkins Credentials.
+- Kubernetes configuration files are excluded from Git.
+- Environment files are excluded from Git.
+- The Docker container runs as a non-root user.
+- Docker registry sessions are logged out after pipeline execution.
