@@ -1,21 +1,19 @@
 pipeline {
     agent any
 
-    triggers {
-        githubPush()
-    }
-
     parameters {
         string(
             name: 'K8S_NAMESPACE',
             defaultValue: 'default',
-            description: 'Kubernetes namespace'
+            description: 'Kubernetes namespace for deployment'
         )
+
         string(
             name: 'IMAGE_NAME',
             defaultValue: 'cicd-demo-app',
             description: 'Docker image name'
         )
+
         string(
             name: 'DOCKERHUB_USERNAME',
             defaultValue: 'debugsnug',
@@ -24,6 +22,7 @@ pipeline {
     }
 
     environment {
+        IMAGE_TAG = "${BUILD_NUMBER}"
         FULL_IMAGE_NAME = "${params.DOCKERHUB_USERNAME}/${params.IMAGE_NAME}:${BUILD_NUMBER}"
     }
 
@@ -47,7 +46,6 @@ pipeline {
                     java -version
                     node --version
                     npm --version
-                    git --version
                     docker --version
                     kubectl version --client
                 '''
@@ -66,55 +64,68 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 dir('app') {
-                    bat "docker build -t ${FULL_IMAGE_NAME} ."
+                    bat 'docker build -t "%FULL_IMAGE_NAME%" .'
                 }
             }
         }
 
-stage('Push to Docker Hub') {
-    steps {
-        withCredentials([
-            usernamePassword(
-                credentialsId: 'dockerhub-credentials',
-                usernameVariable: 'DOCKER_USERNAME',
-                passwordVariable: 'DOCKER_PASSWORD'
-            )
-        ]) {
-            powershell '''
-                $DOCKER_PASSWORD | docker login --username $DOCKER_USERNAME --password-stdin
-                if ($LASTEXITCODE -ne 0) {
-                    exit $LASTEXITCODE
-                }
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DOCKER_USERNAME',
+                        passwordVariable: 'DOCKER_PASSWORD'
+                    )
+                ]) {
+                    bat '''
+                        @echo off
 
-                docker push $env:FULL_IMAGE_NAME
-                if ($LASTEXITCODE -ne 0) {
-                    exit $LASTEXITCODE
+                        set "DOCKER_PASSWORD_FILE=%WORKSPACE%\\docker-password.txt"
+
+                        >"%DOCKER_PASSWORD_FILE%" echo %DOCKER_PASSWORD%
+
+                        docker login -u "%DOCKER_USERNAME%" --password-stdin < "%DOCKER_PASSWORD_FILE%"
+                        if errorlevel 1 (
+                            del /q "%DOCKER_PASSWORD_FILE%"
+                            exit /b 1
+                        )
+
+                        docker push "%FULL_IMAGE_NAME%"
+                        set "PUSH_RESULT=%ERRORLEVEL%"
+
+                        del /q "%DOCKER_PASSWORD_FILE%"
+
+                        exit /b %PUSH_RESULT%
+                    '''
                 }
-            '''
+            }
         }
-    }
-}
 
         stage('Deploy to Kubernetes') {
             steps {
                 withCredentials([
                     file(
                         credentialsId: 'kubeconfig-credentials',
-                        variable: 'KUBECONFIG'
+                        variable: 'KUBECONFIG_FILE'
                     )
                 ]) {
-                    powershell '''
-                        $deploymentFile = "k8s/deployment.yaml"
-                        $renderedFile = "k8s/deployment-rendered.yaml"
+                    bat '''
+                        @echo off
 
-                        $content = Get-Content $deploymentFile -Raw
-                        $content = $content -replace "IMAGE_PLACEHOLDER", $env:FULL_IMAGE_NAME
-                        Set-Content -Path $renderedFile -Value $content
+                        echo Rendering Kubernetes deployment manifest...
+                        powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-Content 'k8s/deployment.yaml') -replace 'IMAGE_PLACEHOLDER', '%FULL_IMAGE_NAME%' | Set-Content 'k8s/deployment-rendered.yaml'"
 
-                        kubectl apply -f $renderedFile -n $env:K8S_NAMESPACE
-                        kubectl apply -f k8s/service.yaml -n $env:K8S_NAMESPACE
+                        echo Applying deployment...
+                        kubectl --kubeconfig="%KUBECONFIG_FILE%" apply -f k8s/deployment-rendered.yaml -n "%K8S_NAMESPACE%"
 
-                        kubectl rollout status deployment/cicd-demo-app -n $env:K8S_NAMESPACE --timeout=120s
+                        echo Applying service...
+                        kubectl --kubeconfig="%KUBECONFIG_FILE%" apply -f k8s/service.yaml -n "%K8S_NAMESPACE%"
+
+                        echo Waiting for rollout...
+                        kubectl --kubeconfig="%KUBECONFIG_FILE%" rollout status deployment/cicd-demo-app -n "%K8S_NAMESPACE%" --timeout=120s
+
+                        echo Kubernetes rollout completed successfully.
                     '''
                 }
             }
@@ -125,13 +136,20 @@ stage('Push to Docker Hub') {
                 withCredentials([
                     file(
                         credentialsId: 'kubeconfig-credentials',
-                        variable: 'KUBECONFIG'
+                        variable: 'KUBECONFIG_FILE'
                     )
                 ]) {
-                    powershell '''
-                        kubectl get deployment cicd-demo-app -n $env:K8S_NAMESPACE
-                        kubectl get pods -l app=cicd-demo-app -n $env:K8S_NAMESPACE
-                        kubectl get service cicd-demo-app-service -n $env:K8S_NAMESPACE
+                    bat '''
+                        @echo off
+
+                        echo ===== Deployment =====
+                        kubectl --kubeconfig="%KUBECONFIG_FILE%" get deployment cicd-demo-app -n "%K8S_NAMESPACE%"
+
+                        echo ===== Pods =====
+                        kubectl --kubeconfig="%KUBECONFIG_FILE%" get pods -n "%K8S_NAMESPACE%" -l app=cicd-demo-app
+
+                        echo ===== Service =====
+                        kubectl --kubeconfig="%KUBECONFIG_FILE%" get service cicd-demo-app-service -n "%K8S_NAMESPACE%"
                     '''
                 }
             }
@@ -140,21 +158,25 @@ stage('Push to Docker Hub') {
 
     post {
         success {
-            echo "Deployment successful: ${FULL_IMAGE_NAME}"
+            echo """
+            ==========================================
+            CI/CD PIPELINE SUCCESSFUL
+            ==========================================
+            Image: ${FULL_IMAGE_NAME}
+            Namespace: ${params.K8S_NAMESPACE}
+            Deployment: cicd-demo-app
+            ==========================================
+            """
         }
 
         failure {
-            echo "Pipeline failed. Check the failed stage for details."
+            echo 'Pipeline failed. Check the failed stage for details.'
         }
 
         always {
-            powershell '''
-                if (Test-Path "k8s/deployment-rendered.yaml") {
-                    Remove-Item "k8s/deployment-rendered.yaml" -Force
-                }
-            '''
-
             bat '''
+                @echo off
+                if exist "%WORKSPACE%\\docker-password.txt" del /q "%WORKSPACE%\\docker-password.txt"
                 docker logout >nul 2>&1
                 exit /b 0
             '''
