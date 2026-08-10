@@ -71,22 +71,29 @@ pipeline {
             }
         }
 
-        stage('Push to Docker Hub') {
-            steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DOCKER_USERNAME',
-                        passwordVariable: 'DOCKER_PASSWORD'
-                    )
-                ]) {
-                    bat '''
-                        echo %DOCKER_PASSWORD% | docker login -u "%DOCKER_USERNAME%" --password-stdin
-                        docker push "%FULL_IMAGE_NAME%"
-                    '''
+stage('Push to Docker Hub') {
+    steps {
+        withCredentials([
+            usernamePassword(
+                credentialsId: 'dockerhub-credentials',
+                usernameVariable: 'DOCKER_USERNAME',
+                passwordVariable: 'DOCKER_PASSWORD'
+            )
+        ]) {
+            powershell '''
+                $DOCKER_PASSWORD | docker login --username $DOCKER_USERNAME --password-stdin
+                if ($LASTEXITCODE -ne 0) {
+                    exit $LASTEXITCODE
                 }
-            }
+
+                docker push $env:FULL_IMAGE_NAME
+                if ($LASTEXITCODE -ne 0) {
+                    exit $LASTEXITCODE
+                }
+            '''
         }
+    }
+}
 
         stage('Deploy to Kubernetes') {
             steps {
